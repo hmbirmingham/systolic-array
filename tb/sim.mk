@@ -19,7 +19,19 @@ ICARUS_BIN_DIR ?= $(OSS_CAD_SUITE)/libexec
 
 SIM ?= icarus
 TOPLEVEL_LANG ?= verilog
-RTL_DIR ?= $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/../rtl)
+
+# Capture this file's own directory immediately.
+#
+# `RTL_DIR ?= ... $(lastword $(MAKEFILE_LIST)) ...` looks right and is not:
+# `?=` defines a RECURSIVE variable, so MAKEFILE_LIST is read when RTL_DIR is
+# first used — which happens after cocotb's Makefile.sim and its own includes
+# have been pulled in. By then lastword points at a makefile inside
+# site-packages, `../rtl` does not exist beside it, realpath returns empty, and
+# the build fails with "No rule to make target `/pe.sv'".
+#
+# `:=` here pins the directory at parse time while leaving RTL_DIR overridable.
+SIM_MK_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
+RTL_DIR ?= $(realpath $(SIM_MK_DIR)/../rtl)
 
 # Dump waves by default so there's always something to open in GTKWave.
 WAVES ?= 1
