@@ -1,0 +1,123 @@
+# Runs the cocotb suite on the same toolchain I use locally.
+#
+# The toolchain is the pinned OSS CAD Suite tarball, not Ubuntu's packages.
+# ADR-0003 has the reasoning: apt ships nextpnr 0.6 against my 0.11.1 and a
+# correspondingly old iverilog, so an apt-based check would answer a different
+# question than my local run does. A green check here means the identical
+# toolchain produced the identical answer.
+
+name: sim
+
+on:
+  pull_request:
+    branches: [dev, test, main]
+  push:
+    branches: [dev, test]
+
+# A newer push to the same branch makes the in-flight run irrelevant.
+concurrency:
+  group: sim-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Both must move together. The tag is the release, the stamp is in the filename.
+  OSS_CAD_TAG: "2026-10-29"
+  OSS_CAD_STAMP: "20261029"
+  # Matches the venv I build locally. cocotb embeds libpython into the
+  # simulator, so the Python version is part of the toolchain, not incidental.
+  PYTHON_VERSION: "3.13"
+  COCOTB_VERSION: "2.1.0"
+
+jobs:
+  cocotb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restore OSS CAD Suite
+        id: cache-oss
+        uses: actions/cache@v4
+        with:
+          path: ~/oss-cad-suite
+          key: oss-cad-suite-linux-x64-${{ env.OSS_CAD_STAMP }}
+
+      # 712 MB on a cache miss. Steady state restores instead.
+      - name: Install OSS CAD Suite
+        if: steps.cache-oss.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          url="https://github.com/YosysHQ/oss-cad-suite-build/releases/download/${OSS_CAD_TAG}/oss-cad-suite-linux-x64-${OSS_CAD_STAMP}.tgz"
+          echo "Downloading $url"
+          curl -fL --retry 3 --retry-delay 5 -o /tmp/oss-cad-suite.tgz "$url"
+          # Refuse anything that isn't the archive I expect before extracting it.
+          file /tmp/oss-cad-suite.tgz | grep -q 'gzip compressed'
+          tar -tzf /tmp/oss-cad-suite.tgz | awk -F/ '{print $1}' | sort -u | grep -qx oss-cad-suite
+          tar -xzf /tmp/oss-cad-suite.tgz -C "$HOME"
+          rm /tmp/oss-cad-suite.tgz
+
+      - name: Build the venv
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet "cocotb==${COCOTB_VERSION}" numpy
+
+      # env.sh is the same file I source locally. If the Linux wrappers pin
+      # PYTHONHOME the way the macOS ones do, this is where it shows up — the
+      # interpreter line below has to name the venv, not the suite.
+      - name: Report the toolchain
+        run: |
+          set -euo pipefail
+          source ./env.sh
+          echo "ICARUS_BIN_DIR=$ICARUS_BIN_DIR"
+          echo "PYTHONHOME=${PYTHONHOME:-(unset)}"
+          echo "cocotb-config -> $(command -v cocotb-config)"
+          python3 -c "import numpy; print('numpy', numpy.__version__)"
+
+      - name: Run the PE suite
+        run: |
+          set -euo pipefail
+          source ./env.sh
+          cd tb/pe && make
+
+      # make should fail on a failing test, but I don't want the gate to depend
+      # on that alone — a suite that silently reports zero tests would pass.
+      - name: Check the results file
+        if: always()
+        run: |
+          set -euo pipefail
+          f=tb/pe/results.xml
+          test -f "$f" || { echo "no results.xml — the suite did not run"; exit 1; }
+          python3 - "$f" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = root.iter("testcase")
+          total = bad = 0
+          for c in cases:
+              total += 1
+              for child in c:
+                  if child.tag in ("failure", "error"):
+                      bad += 1
+                      print(f"FAILED {c.get('classname')}.{c.get('name')}")
+                      break
+          print(f"{total} tests, {bad} failed")
+          if total == 0:
+              sys.exit("results.xml contains no tests")
+          sys.exit(1 if bad else 0)
+          PY
+
+      # The waveform is the first thing I want when a test fails.
+      - name: Upload waveforms
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveforms
+          path: tb/pe/sim_build/*.fst
+          if-no-files-found: ignore
+          retention-days: 7

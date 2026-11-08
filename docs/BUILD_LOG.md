@@ -179,3 +179,49 @@ whether they can fail; killing four mutants says they can.
 LUTs, which is comfortable on an HX8K at 8 bits and likely does not fit at
 `DATA_W=16`. The 3D-transform benchmark wants 16, so this is a constraint on the
 array, noted in ADR-0001.
+
+---
+
+## 2026-11-08 — Day 4: PR 3, continuous integration
+
+Every PR into `dev`, `test`, and `main` now runs the cocotb suite.
+
+### What I decided, and why it took a decision
+
+The question looked like plumbing and wasn't. A simulator has to come from
+somewhere, and the options differ in what a green check *means*. Ubuntu's
+packages are the easy path but they lag — noble ships nextpnr 0.6 against my
+0.11.1 — so an apt-based check would answer a different question than my local
+run does. On a repo whose value rests on the word "verified," that gap matters
+more than the install time it saves.
+
+CI installs the same dated OSS CAD Suite release I run locally, cached between
+runs, and sources the same `env.sh`. One toolchain path instead of two that can
+drift. [ADR-0003](decisions/ADR-0003-ci-toolchain.md) records it against the
+apt, container, and self-hosted-runner alternatives — the last of which I
+rejected on security grounds, since a self-hosted runner on a public repo lets
+a fork's pull request run code on my laptop.
+
+A constraint that made this easier than expected: synthesis isn't a CI product.
+The resource and Fmax numbers are generated locally and committed to
+`synth/reports/`, so CI needs Icarus and nothing else.
+
+### The gate doesn't trust `make`
+
+A workflow that only checks the exit status of `make` would report success for a
+suite that silently ran zero tests. So the gate parses `results.xml` and fails
+on any failure *or* on an empty run.
+
+I tested that checker before trusting it, against a passing run, a run with an
+injected failure, and a file with no tests. The first attempt appeared to fail
+on a passing suite — the `results.xml` on disk was stale, left over from the
+last mutation run, which had deliberately failed. Worth noting because it's the
+same class of mistake the checker exists to catch: a result file that doesn't
+describe the run you think it does.
+
+### Unverified, deliberately
+
+Whether the Linux build's `bin/` wrappers pin `PYTHONHOME` the way the macOS
+ones do, I don't know. Rather than guess, the workflow prints the resolved
+interpreter and `ICARUS_BIN_DIR` on every run, so the first green check either
+confirms `env.sh` handles Linux too or shows exactly where it doesn't.
