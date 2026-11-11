@@ -137,3 +137,45 @@ This repo is public, so this log is public. I keep two files local and
 gitignored: `CLAUDE.md`, and a private log for context that belongs to my other
 projects rather than to this one. Everything needed to understand, build, and
 verify the array is in the repo; nothing load-bearing lives outside it.
+
+### The PE, and a latent bug in sim.mk
+
+`rtl/pe.sv` plus its cocotb suite and NumPy golden model. Every assertion
+compares the RTL against `golden/pe_model.py` rather than a number typed into
+the testbench: a MAC has an exact definition, so there was no reason to accept a
+weaker oracle than the real one.
+
+**`tb/sim.mk` had a bug that would have bitten the first testbench either way.**
+
+```make
+RTL_DIR ?= $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/../rtl)
+```
+
+`?=` defines a *recursive* variable, so `MAKEFILE_LIST` is read when `RTL_DIR`
+is first used — not where it is written. By then cocotb's `Makefile.sim` and its
+own includes have been pulled in, `lastword` points at a makefile inside
+`site-packages`, there is no `../rtl` beside it, `realpath` returns empty, and
+the build dies with ``No rule to make target `/pe.sv'``. The message names a
+path that appears nowhere in the repo, which is what makes it slow to find.
+
+Fixed by pinning the directory at parse time with `:=` and leaving `RTL_DIR`
+itself overridable:
+
+```make
+SIM_MK_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
+RTL_DIR ?= $(realpath $(SIM_MK_DIR)/../rtl)
+```
+
+**The suite was mutation-tested rather than trusted for being green.** Four
+deliberate breaks in `pe.sv`, all caught: truncating the product to
+`2*DATA_W-1` bits (1 failure, the `-128 * -128` corner), letting `en` outrank
+`clear` (1), forwarding operands while stalled (2), and overwriting the
+accumulator instead of adding to it (4). Six tests passing says nothing about
+whether they can fail; killing four mutants says they can.
+
+**Synthesis, as a smoke check only** — the real synthesis work is still PR 7.
+`synth_ice40` on the PE alone gives 238 LUT4, 48 DFFESR, 41 SB_CARRY, with no
+`SB_MAC16` inferred: the 8x8 multiply became LUT logic. Sixteen PEs is ~3,800
+LUTs, which is comfortable on an HX8K at 8 bits and likely does not fit at
+`DATA_W=16`. The 3D-transform benchmark wants 16, so this is a constraint on the
+array, noted in ADR-0001.
