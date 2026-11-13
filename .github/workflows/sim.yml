@@ -1,0 +1,116 @@
+# Runs the cocotb suite on the pinned OSS CAD Suite, the same toolchain as my
+# local setup, so a green check means the identical tools gave the identical
+# answer. ADR-0003 covers why not apt.
+
+name: sim
+
+on:
+  pull_request:
+    branches: [dev, test, main]
+  push:
+    branches: [dev, test]
+
+# A newer push to the same branch makes the in-flight run irrelevant.
+concurrency:
+  group: sim-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Both must move together. The tag is the release, the stamp is in the filename.
+  OSS_CAD_TAG: "2026-10-29"
+  OSS_CAD_STAMP: "20261029"
+  # cocotb embeds libpython into the simulator, so this is part of the toolchain.
+  PYTHON_VERSION: "3.13"
+  COCOTB_VERSION: "2.1.0"
+
+jobs:
+  cocotb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restore OSS CAD Suite
+        id: cache-oss
+        uses: actions/cache@v4
+        with:
+          path: ~/oss-cad-suite
+          key: oss-cad-suite-linux-x64-${{ env.OSS_CAD_STAMP }}
+
+      # 712 MB on a cache miss. Steady state restores instead.
+      - name: Install OSS CAD Suite
+        if: steps.cache-oss.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          url="https://github.com/YosysHQ/oss-cad-suite-build/releases/download/${OSS_CAD_TAG}/oss-cad-suite-linux-x64-${OSS_CAD_STAMP}.tgz"
+          echo "Downloading $url"
+          curl -fL --retry 3 --retry-delay 5 -o /tmp/oss-cad-suite.tgz "$url"
+          # Refuse anything that isn't the archive I expect before extracting it.
+          file /tmp/oss-cad-suite.tgz | grep -q 'gzip compressed'
+          tar -tzf /tmp/oss-cad-suite.tgz | awk -F/ '{print $1}' | sort -u | grep -qx oss-cad-suite
+          tar -xzf /tmp/oss-cad-suite.tgz -C "$HOME"
+          rm /tmp/oss-cad-suite.tgz
+
+      - name: Build the venv
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet "cocotb==${COCOTB_VERSION}" numpy
+
+      # Same env.sh I source locally. The interpreter line must name the venv,
+      # not the suite, or numpy is unreachable and the golden models can't run.
+      - name: Report the toolchain
+        run: |
+          set -euo pipefail
+          source ./env.sh
+          echo "ICARUS_BIN_DIR=$ICARUS_BIN_DIR"
+          echo "PYTHONHOME=${PYTHONHOME:-(unset)}"
+          echo "cocotb-config -> $(command -v cocotb-config)"
+          python3 -c "import numpy; print('numpy', numpy.__version__)"
+
+      - name: Run the PE suite
+        run: |
+          set -euo pipefail
+          source ./env.sh
+          cd tb/pe && make
+
+      # make alone isn't enough: a suite reporting zero tests would pass it.
+      - name: Check the results file
+        if: always()
+        run: |
+          set -euo pipefail
+          f=tb/pe/results.xml
+          test -f "$f" || { echo "no results.xml — the suite did not run"; exit 1; }
+          python3 - "$f" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = root.iter("testcase")
+          total = bad = 0
+          for c in cases:
+              total += 1
+              for child in c:
+                  if child.tag in ("failure", "error"):
+                      bad += 1
+                      print(f"FAILED {c.get('classname')}.{c.get('name')}")
+                      break
+          print(f"{total} tests, {bad} failed")
+          if total == 0:
+              sys.exit("results.xml contains no tests")
+          sys.exit(1 if bad else 0)
+          PY
+
+      # First thing I want when a test fails.
+      - name: Upload waveforms
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveforms
+          path: tb/pe/sim_build/*.fst
+          if-no-files-found: ignore
+          retention-days: 7

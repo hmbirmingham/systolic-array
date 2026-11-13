@@ -1,0 +1,26 @@
+# Local-only context — stays on my machine, never committed
+CLAUDE.md
+PRIVATE_LOG.md
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# cocotb / simulation artifacts
+sim_build/
+results.xml
+*.vcd
+*.fst
+*.fst.hier
+*.ghw
+
+# Yosys / nextpnr intermediates. Scoped to synth/build so a stray *.json
+# rule can never silently swallow a config file elsewhere in the repo.
+synth/build/
+*.asc
+*.bin
+*.blif
+
+# macOS
+.DS_Store
