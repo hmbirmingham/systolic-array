@@ -1,6 +1,7 @@
 # Local-only context — stays on my machine, never committed
 CLAUDE.md
 PRIVATE_LOG.md
+ROADMAP.local.md
 
 # Python
 .venv/

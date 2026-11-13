@@ -13,8 +13,8 @@ silicon.
 
 | Path | Contents |
 |---|---|
-| `rtl/` | `pe.sv` (multiply-accumulate cell), `systolic_4x4.sv` |
-| `tb/` | cocotb testbenches, `sim.mk`, Linux tool shims |
+| `rtl/` | `pe.sv` (MAC cell), `systolic_4x4.sv` (the array), `systolic_4x4_top.sv` (readout wrapper) |
+| `tb/` | cocotb testbenches per block, `sim.mk`, Linux tool shims |
 | `golden/` | NumPy reference models |
 | `synth/` | Yosys + nextpnr scripts and committed reports |
 | `docs/` | `BUILD_LOG.md`, architecture decision records |
@@ -32,6 +32,18 @@ creates the diagonal wavefront, so skew is a property of the dataflow rather
 than something the testbench arranges.
 [ADR-0001](docs/decisions/ADR-0001-dataflow.md) covers the weight-stationary
 alternative.
+
+Because the operands are skewed, each cell works on a different window of the
+tile. Rather than add per-cell start logic, the feed is zero-padded outside each
+window: an out-of-window product is zero, so every cell can run with `en` high
+for the whole tile under a single broadcast `clear`
+([ADR-0004](docs/decisions/ADR-0004-tile-control.md)). A tile is `K + 2*(N-1)`
+cycles, fill and drain included.
+
+`systolic_4x4` exposes all sixteen accumulators flat, which is right for
+verification and unplaceable on a device at 512 bits. `systolic_4x4_top` adds a
+shift-chain readout, one word per cycle
+([ADR-0005](docs/decisions/ADR-0005-readout.md)).
 
 ## Verification
 
@@ -67,10 +79,17 @@ Not yet measured.
 
 ### Synthesis
 
-Not yet run. A smoke check on the PE alone gives 238 LUT4, 48 DFFESR and
-41 SB_CARRY on iCE40 with no `SB_MAC16` inferred, so the 8x8 multiply maps to
-LUT logic. Sixteen of those is roughly 3,800 LUTs, comfortable on an HX8K at 8
-bits and probably not at `DATA_W=16`.
+Yosys only so far; `nextpnr` has not run, so Fmax is unmeasured. Measured on
+`systolic_4x4` with `ACC_W=32`:
+
+| Target | `DATA_W=8` | `DATA_W=16` | Hard multipliers |
+|---|---|---|---|
+| iCE40 | 3,782 LUT4 | 13,028 LUT4 | none inferred |
+| ECP5 | 514 LUT4 | 515 LUT4 | 16 × MULT18X18D |
+
+iCE40 at 16 bits is 170% of an HX8K's 7,680 LUTs. ECP5 infers one `MULT18X18D`
+per PE, and 16-bit costs the same as 8-bit because the DSP block covers both.
+The target is ECP5 ([ADR-0006](docs/decisions/ADR-0006-synthesis-target.md)).
 
 ## Setup
 
@@ -79,7 +98,7 @@ Toolchain versions and the macOS and Linux traps are in
 
 ```bash
 source env.sh          # venv ahead of OSS CAD Suite, platform-correct ICARUS_BIN_DIR
-cd tb/pe && make
+cd tb/array && make    # or tb/pe, tb/top
 ```
 
 ## Branch flow

@@ -8,7 +8,7 @@ on:
   pull_request:
     branches: [dev, test, main]
   push:
-    branches: [dev, test]
+    branches: [dev, test, main]
 
 # A newer push to the same branch makes the in-flight run irrelevant.
 concurrency:
@@ -74,35 +74,56 @@ jobs:
           echo "cocotb-config -> $(command -v cocotb-config)"
           python3 -c "import numpy; print('numpy', numpy.__version__)"
 
-      - name: Run the PE suite
+      - name: Run the suites
         run: |
           set -euo pipefail
           source ./env.sh
-          cd tb/pe && make
+          rc=0
+          for d in tb/*/; do
+            [ -f "$d/Makefile" ] || continue
+            echo "::group::$d"
+            ( cd "$d" && make ) || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
 
       # make alone isn't enough: a suite reporting zero tests would pass it.
-      - name: Check the results file
+      - name: Check the results files
         if: always()
         run: |
           set -euo pipefail
-          f=tb/pe/results.xml
-          test -f "$f" || { echo "no results.xml — the suite did not run"; exit 1; }
-          python3 - "$f" <<'PY'
-          import sys, xml.etree.ElementTree as ET
-          root = ET.parse(sys.argv[1]).getroot()
-          cases = root.iter("testcase")
-          total = bad = 0
-          for c in cases:
-              total += 1
-              for child in c:
-                  if child.tag in ("failure", "error"):
+          # Every directory with a Makefile must have produced results.xml. A
+          # suite that never ran would otherwise be indistinguishable from one
+          # that passed.
+          expected=$(ls -d tb/*/ | while read -r d; do [ -f "$d/Makefile" ] && echo "$d"; done)
+          test -n "$expected" || { echo "no test suites found under tb/"; exit 1; }
+          python3 - $expected <<'PY'
+          import sys, pathlib, xml.etree.ElementTree as ET
+          rc = 0
+          grand = 0
+          for d in sys.argv[1:]:
+              f = pathlib.Path(d) / "results.xml"
+              if not f.exists():
+                  print(f"{d}: NO results.xml — the suite did not run")
+                  rc = 1
+                  continue
+              total = bad = 0
+              for c in ET.parse(f).getroot().iter("testcase"):
+                  total += 1
+                  if any(ch.tag in ("failure", "error") for ch in c):
                       bad += 1
-                      print(f"FAILED {c.get('classname')}.{c.get('name')}")
-                      break
-          print(f"{total} tests, {bad} failed")
-          if total == 0:
-              sys.exit("results.xml contains no tests")
-          sys.exit(1 if bad else 0)
+                      print(f"  FAILED {c.get('classname')}.{c.get('name')}")
+              print(f"{d}: {total} tests, {bad} failed")
+              grand += total
+              if total == 0:
+                  print(f"{d}: results.xml contains no tests")
+                  rc = 1
+              if bad:
+                  rc = 1
+          print(f"total: {grand} tests across {len(sys.argv)-1} suites")
+          if grand == 0:
+              rc = 1
+          sys.exit(rc)
           PY
 
       # First thing I want when a test fails.
@@ -111,6 +132,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: waveforms
-          path: tb/pe/sim_build/*.fst
+          path: tb/*/sim_build/*.fst
           if-no-files-found: ignore
           retention-days: 7
