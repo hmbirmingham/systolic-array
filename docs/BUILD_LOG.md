@@ -312,3 +312,82 @@ suite, and an injected failure.
 
 Also added `main` to the push triggers. It was absent, so a direct push to
 `main` would have had no CI at all, which contradicted ADR-0003.
+
+---
+
+## 2026-11-13 — PR 7: the transform benchmark
+
+The workload the array exists for. A 4x4 homogeneous transform over a point
+cloud, four points per tile.
+
+### Fixed point, measured rather than chosen
+
+Three quantities with different ranges share one 16-bit word: rotation entries
+(all <= 1), translation (metres), and coordinates (metres). One format for all
+three costs 39 mm of error at an 8 m extent where two formats cost 0.66 mm, a
+factor of 59, because a shared format spends its fraction on range the rotation
+matrix never uses.
+
+Matrix in Q1.14, points in Q7.8, translation carried through a power-of-two
+scale on the homogeneous component: with `P[3] = w` and `M[:,3] = t/w`, the
+product recovers `t` at the matrix's own resolution.
+[ADR-0002](decisions/ADR-0002-fixed-point.md).
+
+| Matrix / point | +/-8 m | +/-64 m |
+|---|---|---|
+| Q7.8 / Q7.8 | 39.0 mm | 310.7 mm |
+| Q1.14 / Q7.8 | 3.1 mm | 4.9 mm |
+| Q1.14 / Q4.11 | 0.66 mm | saturates |
+
+### ACC_W=32 is not enough in general
+
+Four full-scale 16-bit products sum to 2^32 — `-32768 * -32768` is 2^30 and
+there are four terms — which does not fit a signed 32-bit accumulator. Inside
+the transform's envelope the measured headroom is 29 bits of 31, so it is
+sufficient *there*. That makes the envelope a constraint rather than a
+recommendation:
+
+    K * max|m_q| * max|p_q| < 2^31
+
+I found this by writing the corner test and watching it fail against an
+unbounded Python reference. The RTL was wrapping correctly; the reference was
+not wrapping at all.
+
+### Results
+
+- Bit-exact against the integer reference over 64 points. No tolerance on that
+  comparison: the RTL must equal the fixed-point answer exactly.
+- Quantization error 4.54 mm max, 1.50 mm rms against a derived bound of
+  28.2 mm, so the bound is conservative by about 6x. The bound is what gets
+  quoted, because a measurement over one cloud is not a guarantee.
+- 10 cycles per 4-point tile, **2.50 cycles/point**, fill and drain included,
+  readout excluded.
+
+### Mutation testing found a real gap
+
+The benchmark's own data never reaches the signed corner: rotation entries
+quantize to at most 2^14 and coordinates similarly, so `-32768 * -32768` never
+occurs naturally. Truncating the product by one bit survived every realistic
+test.
+
+Driving the corner directly took working out. Four corner terms do **not**
+discriminate: a 2*DATA_W-1 product wraps 2^30 to -2^30, four of those sum to
+-2^32, and the accumulator wraps that back to 0 — the same answer the correct
+version gives. The product wrap and the accumulator wrap cancel. One
+contributing term leaves the sum at 2^30, which fits, so the truncation shows.
+Only `-32768 * -32768` reaches 2^30 at all; `32767 * 32767` is 1073676289 and
+stays inside a 31-bit product.
+
+One mutation still survives and is provably a no-op here: at `DATA_W=16`,
+`2*DATA_W` equals `ACC_W`, so `ACC_W'(prod)` leaves the bits untouched and the
+product's signedness cannot matter. Sign extension exists only at narrower
+widths, and `tb/pe` at `DATA_W=8` does catch it.
+
+### Still outstanding
+
+- The **working volume** is unconfirmed. Q7.8 is the conservative default. If
+  the real volume is a room, Q4.11 is a 7x accuracy improvement for a one-line
+  change.
+- The **Pi 5 baseline** needs a Pi 5. Cycle counts are measured; the comparison
+  is not.
+- `nextpnr` still has not run, so Fmax is unmeasured.

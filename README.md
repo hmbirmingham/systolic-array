@@ -63,19 +63,26 @@ into `dev`, `test` and `main`
 
 Both run against the same RTL:
 
-1. **4x4 homogeneous transform** over a synthetic point cloud, points batched as
-   4xN tiles, fixed-point at `DATA_W=16`.
+1. **4x4 homogeneous transform** over a synthetic point cloud, four points per
+   tile, fixed-point at `DATA_W=16`. The matrix is Q1.14 and the points Q7.8,
+   with translation carried through a power-of-two scale on the homogeneous
+   component ([ADR-0002](docs/decisions/ADR-0002-fixed-point.md)).
 2. **Linear image filter**, one convolution step from an image-processing
    pipeline, expressed as a matmul via im2col.
 
 ### Results
 
-Not yet measured.
-
-| Benchmark | Cycles | Throughput | Pi 5 baseline | Speedup |
+| Benchmark | Cycles/tile | Throughput | Accuracy | Pi 5 baseline |
 |---|---|---|---|---|
-| 4x4 transform | — | — | — | — |
+| 4x4 transform, `DATA_W=16` | 10 (4 points) | 2.50 cycles/point | 4.54 mm max, 1.50 mm rms | not yet measured |
 | Linear filter (im2col) | — | — | — | — |
+
+Tile cycles include fill and drain and exclude the 16-cycle readout. Accuracy is
+quantization error against a float reference; the RTL itself is **bit-exact**
+against the fixed-point reference, with no tolerance on that comparison. The
+derived error bound for this format is 28.2 mm, so the measured figures sit
+about 6x inside it — the bound is what the format guarantees
+([ADR-0002](docs/decisions/ADR-0002-fixed-point.md)).
 
 ### Synthesis
 
