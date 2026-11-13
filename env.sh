@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 # Source this, don't execute it:   source env.sh
 #
-# Three things have to be true before cocotb can drive Icarus on this machine.
-# I learned each of them the hard way on day 1 — see docs/BUILD_LOG.md.
-#
-#   1. The venv's Python must win over the one bundled in OSS CAD Suite.
-#      The bundled interpreter has no numpy, so my golden models can't run there.
-#   2. ICARUS_BIN_DIR must point at libexec/, not bin/. The scripts in bin/ are
-#      wrappers that force PYTHONHOME to the suite and hijack cocotb.
-#   3. PYTHONHOME must be unset.
+# cocotb needs my venv's Python, not the one bundled in OSS CAD Suite, which has
+# no numpy. That means PATH order, PYTHONHOME unset, and an ICARUS_BIN_DIR that
+# avoids the bin/ wrappers. See docs/BUILD_LOG.md.
 
 _REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export OSS_CAD_SUITE="${OSS_CAD_SUITE:-$HOME/oss-cad-suite}"
@@ -27,8 +22,18 @@ fi
 
 # Order matters: venv first so `cocotb-config` resolves to mine, not the suite's.
 export PATH="$_REPO/.venv/bin:$OSS_CAD_SUITE/bin:$PATH"
-export ICARUS_BIN_DIR="$OSS_CAD_SUITE/libexec"
 unset PYTHONHOME
+
+# Platform-specific. macOS libexec binaries resolve their libraries relative to
+# themselves; Linux ones need the suite's bundled loader, which only the bin/
+# wrappers invoke, and bin/vvp also sets PYTHONHOME. tb/toolshim-linux/README.md
+# has the detail.
+case "$(uname -s)" in
+  Linux)  export ICARUS_BIN_DIR="$_REPO/tb/toolshim-linux" ;;
+  Darwin) export ICARUS_BIN_DIR="$OSS_CAD_SUITE/libexec" ;;
+  *)      echo "env.sh: unrecognised platform $(uname -s); assuming libexec works" >&2
+          export ICARUS_BIN_DIR="$OSS_CAD_SUITE/libexec" ;;
+esac
 
 echo "systolic-array env ready"
 echo "  python       $(python3 --version 2>&1)"

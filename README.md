@@ -1,78 +1,93 @@
 # systolic-array
 
 A parameterized 4x4 systolic array in SystemVerilog, verified with cocotb and
-synthesized against a real FPGA target. v1 is simulation only — no hardware
-bring-up until summer 2027.
+synthesized with Yosys and nextpnr. v1 is simulation only; no hardware bring-up
+until summer 2027.
 
-I chose the 4x4 shape deliberately. Point cloud transforms are 4x4 homogeneous
-matrix multiplies, so the array maps directly onto a real workload rather than
-an arbitrary benchmark size. It's built and verified as a standalone component.
+The 4x4 shape is deliberate. Point cloud transforms are 4x4 homogeneous matrix
+multiplies, so the array maps onto a real workload rather than an arbitrary
+benchmark size. It extends my spine — physical signal to decision — down to
+silicon.
 
-## Why this exists
-
-- It extends my spine — physical signal to decision — down to silicon.
-- It gives me an RTL and verification artifact next to my firmware work.
-- The benchmarks run on real workloads from my own systems, not toy matrices.
-
-## What's here
+## Layout
 
 | Path | Contents |
 |---|---|
-| `rtl/` | `pe.sv` (multiply-accumulate cell), `systolic_4x4.sv` (the array) |
-| `tb/` | cocotb testbenches and the simulation Makefile |
-| `golden/` | NumPy reference models every RTL output is checked against |
+| `rtl/` | `pe.sv` (multiply-accumulate cell), `systolic_4x4.sv` |
+| `tb/` | cocotb testbenches, `sim.mk`, Linux tool shims |
+| `golden/` | NumPy reference models |
 | `synth/` | Yosys + nextpnr scripts and committed reports |
-| `docs/` | `BUILD_LOG.md` and architecture decision records |
+| `docs/` | `BUILD_LOG.md`, architecture decision records |
 
 ## Design
 
-- **Processing element** — multiply-accumulate, parameterized `DATA_W`
-  (default 8) and `ACC_W` (default 32).
-- **Dataflow** — output-stationary. It's the simplest correct dataflow for v1;
-  I document the tradeoff against weight-stationary in
-  [ADR-0001](docs/decisions/ADR-0001-dataflow.md).
+The processing element does one multiply-accumulate, parameterized on `DATA_W`
+(default 8) and `ACC_W` (default 32). The product is carried at full `2*DATA_W`
+width: `-128 * -128 = +16384` overflows a `2*DATA_W-1` result.
+
+Dataflow is output-stationary. Each PE owns one element of the result for the
+whole tile, `a` flows west to east, `b` flows north to south, and each PE
+forwards what it received one cycle later. That one-cycle hop in both directions
+creates the diagonal wavefront, so skew is a property of the dataflow rather
+than something the testbench arranges.
+[ADR-0001](docs/decisions/ADR-0001-dataflow.md) covers the weight-stationary
+alternative.
+
+## Verification
+
+Every RTL output is checked against a NumPy model in `golden/`, never against
+expected values typed into a testbench. The models wrap at `ACC_W` to match the
+hardware, since Python's unbounded integers would diverge on a long
+accumulation.
+
+New testbenches are mutation-tested: the RTL is broken on purpose and the suite
+has to catch it. Six passing tests say nothing about whether they can fail.
+
+CI runs the suite on the same pinned toolchain as my local setup, on every PR
+into `dev`, `test` and `main`
+([ADR-0003](docs/decisions/ADR-0003-ci-toolchain.md)).
 
 ## Benchmarks
 
 Both run against the same RTL:
 
-1. **3D transform** — a 4x4 homogeneous transform over a synthetic point cloud,
-   points batched as 4xN tiles, fixed-point with `DATA_W=16`.
-2. **Linear image filter** — one convolution step from an image-processing
+1. **4x4 homogeneous transform** over a synthetic point cloud, points batched as
+   4xN tiles, fixed-point at `DATA_W=16`.
+2. **Linear image filter**, one convolution step from an image-processing
    pipeline, expressed as a matmul via im2col.
 
-## Results
+### Results
 
-<!-- Filled in by PR 8. -->
-_Not yet measured._
+Not yet measured.
 
 | Benchmark | Cycles | Throughput | Pi 5 baseline | Speedup |
 |---|---|---|---|---|
-| 4x4 transform | TBD | TBD | TBD | TBD |
-| Linear filter (im2col) | TBD | TBD | TBD | TBD |
+| 4x4 transform | — | — | — | — |
+| Linear filter (im2col) | — | — | — | — |
 
-## Synthesis
+### Synthesis
 
-<!-- Filled in by PR 7. -->
-_Not yet run._
+Not yet run. A smoke check on the PE alone gives 238 LUT4, 48 DFFESR and
+41 SB_CARRY on iCE40 with no `SB_MAC16` inferred, so the 8x8 multiply maps to
+LUT logic. Sixteen of those is roughly 3,800 LUTs, comfortable on an HX8K at 8
+bits and probably not at `DATA_W=16`.
 
-## Getting set up
+## Setup
 
-The toolchain is all free and all local. See
-[`docs/BUILD_LOG.md`](docs/BUILD_LOG.md) for the exact versions I'm building
-against and the macOS-specific traps I hit getting cocotb to talk to Icarus.
+Toolchain versions and the macOS and Linux traps are in
+[`docs/BUILD_LOG.md`](docs/BUILD_LOG.md).
 
 ```bash
-source env.sh          # puts the venv ahead of OSS CAD Suite on PATH
-cd tb && make          # run the cocotb suite
+source env.sh          # venv ahead of OSS CAD Suite, platform-correct ICARUS_BIN_DIR
+cd tb/pe && make
 ```
 
 ## Branch flow
 
-Every feature goes `feat/*` -> PR into `dev` -> promote `dev` to `test` -> run
-the full suite on `test` -> promote `test` to `main`. I never test on `main`;
-it only ever receives code that has already passed on `test`.
+`feat/*` → PR into `dev` → promote `dev` to `test` → full suite on `test` →
+promote `test` to `main`. I never test on `main`; it only receives code that has
+already passed on `test`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
