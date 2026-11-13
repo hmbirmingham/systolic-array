@@ -1,10 +1,6 @@
-# Runs the cocotb suite on the same toolchain I use locally.
-#
-# The toolchain is the pinned OSS CAD Suite tarball, not Ubuntu's packages.
-# ADR-0003 has the reasoning: apt ships nextpnr 0.6 against my 0.11.1 and a
-# correspondingly old iverilog, so an apt-based check would answer a different
-# question than my local run does. A green check here means the identical
-# toolchain produced the identical answer.
+# Runs the cocotb suite on the pinned OSS CAD Suite, the same toolchain as my
+# local setup, so a green check means the identical tools gave the identical
+# answer. ADR-0003 covers why not apt.
 
 name: sim
 
@@ -23,8 +19,7 @@ env:
   # Both must move together. The tag is the release, the stamp is in the filename.
   OSS_CAD_TAG: "2026-10-29"
   OSS_CAD_STAMP: "20261029"
-  # Matches the venv I build locally. cocotb embeds libpython into the
-  # simulator, so the Python version is part of the toolchain, not incidental.
+  # cocotb embeds libpython into the simulator, so this is part of the toolchain.
   PYTHON_VERSION: "3.13"
   COCOTB_VERSION: "2.1.0"
 
@@ -68,9 +63,8 @@ jobs:
           .venv/bin/pip install --quiet --upgrade pip
           .venv/bin/pip install --quiet "cocotb==${COCOTB_VERSION}" numpy
 
-      # env.sh is the same file I source locally. If the Linux wrappers pin
-      # PYTHONHOME the way the macOS ones do, this is where it shows up — the
-      # interpreter line below has to name the venv, not the suite.
+      # Same env.sh I source locally. The interpreter line must name the venv,
+      # not the suite, or numpy is unreachable and the golden models can't run.
       - name: Report the toolchain
         run: |
           set -euo pipefail
@@ -86,8 +80,7 @@ jobs:
           source ./env.sh
           cd tb/pe && make
 
-      # make should fail on a failing test, but I don't want the gate to depend
-      # on that alone — a suite that silently reports zero tests would pass.
+      # make alone isn't enough: a suite reporting zero tests would pass it.
       - name: Check the results file
         if: always()
         run: |
@@ -112,7 +105,7 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
-      # The waveform is the first thing I want when a test fails.
+      # First thing I want when a test fails.
       - name: Upload waveforms
         if: failure()
         uses: actions/upload-artifact@v4
