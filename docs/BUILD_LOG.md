@@ -218,3 +218,97 @@ with the `PYTHONHOME` export removed. `env.sh` selects per platform. Linux
 CI compiled through raw `libexec/iverilog` by luck and the shim covers both.
 
 Cold cache is ~20s on a runner, not the 2-4 minutes I estimated in ADR-0003.
+
+---
+
+## 2026-11-13 — PR 6: the 4x4 array
+
+`rtl/systolic_4x4.sv`, a synthesizable wrapper, and the synthesis number that
+decides the target part.
+
+### Tile control
+
+The array's cells work on different windows: PE(i,j) has real operands only for
+t = i+j .. K-1+i+j, offsets running 0 to 6. A broadcast `clear` at t=0 would
+zero PE(3,3) six cycles before its first product arrives.
+
+Solved by zero-padding the feed instead of adding control: out-of-window
+operands are zero, the product is zero, the accumulator is unchanged, so every
+cell can run with `en` high for the whole tile. The array is sixteen cells and
+wires, no counters, no per-cell start. [ADR-0004](decisions/ADR-0004-tile-control.md).
+
+`clear` outranking `en` — chosen in PR 2 for tile boundaries — is what makes
+t=0 correct: PE(0,0) already has its real first product then, and
+`acc <= en ? prod : 0` with both asserted gives the product rather than zero.
+
+A tile is K + 2*(N-1) cycles, so K+6. Fill and drain are in that number and
+have to stay in it.
+
+### The stall test was wrong, not the RTL
+
+Wrote a stall test that held `clear` through the stall and watched an
+accumulator go from -5590 to 0. `clear` is deliberately not gated by `en`, so
+holding it zeroes the array — which makes `clear` a single-cycle pulse rather
+than a mode. That is now a documented contract in ADR-0004 and in the wrapper
+header, and the stall test checks it is survivable.
+
+### Readout
+
+Sixteen accumulators at ACC_W=32 is 512 bits, which places on nothing. But
+readout logic inside the array sits in the middle of the module whose arithmetic
+is being verified.
+
+Split: `systolic_4x4` exposes the flat vector and `systolic_4x4_top` wraps it
+with a shift-chain readout, one word per cycle, row-major.
+[ADR-0005](decisions/ADR-0005-readout.md). The top is ~101 I/O at DATA_W=8 and
+~165 at 16, inside an HX8K's ~206. `read_start` snapshots all sixteen on one
+edge, so the array can stream the next tile while the previous result shifts
+out.
+
+### Synthesis, measured before the benchmarks
+
+ADR-0001 left the 16-bit question to whichever ADR settled the target. Measured
+it now rather than in PR 7, because a target that cannot hold the array is a
+constraint on the benchmarks:
+
+| Target | DATA_W=8 | DATA_W=16 | Hard multipliers |
+|---|---|---|---|
+| iCE40 | 3,782 LUT4 | 13,028 LUT4 | none inferred |
+| ECP5 | 514 LUT4 | 515 LUT4 | 16 MULT18X18D |
+
+iCE40 at 16 bits is 170% of an HX8K's 7,680 LUTs. ECP5 infers one MULT18X18D
+per PE and 16-bit costs the same as 8-bit. Target is ECP5
+([ADR-0006](decisions/ADR-0006-synthesis-target.md)).
+
+The extrapolation in ADR-0001 held: 238 x 16 predicted 3,808 against 3,782
+measured.
+
+`nextpnr-ecp5` still has not run. Fmax is unmeasured, and sixteen DSP blocks
+feeding a 32-bit accumulator is where the critical path will be.
+
+### Verification
+
+16 tests across three suites: 6 PE, 7 array, 3 wrapper.
+
+The array has two oracles. `matmul_reference` is the maths; `ArrayModel` is a
+cycle-accurate mesh composed from the already-verified `PEModel`, so a mismatch
+against one and not the other says whether the fault is arithmetic or wiring.
+`test_cycle_accurate_against_model` compares all sixteen accumulators on every
+edge, because an end-of-tile check can pass while the wavefront is wrong in a
+way that cancels.
+
+Mutation-tested, six breaks, all caught: transposing the accumulator index,
+swapping the west and north edges, removing the horizontal skew, removing the
+vertical skew, pinning the north edge to column 0, and leaving the eastward
+operand unconnected.
+
+### CI
+
+It was running `tb/pe` only, so the two new suites would not have been checked.
+It now loops every directory under `tb/` with a Makefile and requires a
+`results.xml` from each — a suite that never ran was otherwise
+indistinguishable from one that passed. Tested against a passing set, a missing
+suite, and an injected failure.
+
+Also added `main` to the push triggers. It was absent, so a direct push to
+`main` would have had no CI at all, which contradicted ADR-0003.
