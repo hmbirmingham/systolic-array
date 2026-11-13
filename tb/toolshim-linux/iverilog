@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# The suite's bin/iverilog invocation, with VVP_EXECUTABLE pointed at the shim
+# vvp beside this script rather than the suite's. bin/iverilog sets no
+# PYTHONHOME, but it would hand the compiled output a path to the wrapper that
+# does. See README.md.
+set -euo pipefail
+: "${OSS_CAD_SUITE:?OSS_CAD_SUITE is not set — source env.sh first}"
+_shim_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+set -- "-p" "VVP_EXECUTABLE=$_shim_dir/vvp" "$@"
+exec "$OSS_CAD_SUITE/lib/ld-linux-x86-64.so.2" \
+     --inhibit-cache --inhibit-rpath "" \
+     --library-path "$OSS_CAD_SUITE/lib" \
+     "$OSS_CAD_SUITE/libexec/iverilog" "$@"
