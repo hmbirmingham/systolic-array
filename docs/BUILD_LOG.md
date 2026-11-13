@@ -225,3 +225,69 @@ Whether the Linux build's `bin/` wrappers pin `PYTHONHOME` the way the macOS
 ones do, I don't know. Rather than guess, the workflow prints the resolved
 interpreter and `ICARUS_BIN_DIR` on every run, so the first green check either
 confirms `env.sh` handles Linux too or shows exactly where it doesn't.
+
+---
+
+## 2026-11-13 — Day 5: the first CI run, and what it caught
+
+The first run failed, and it was worth more than a green check would have been.
+
+### The question I asked got a clean answer
+
+I'd deliberately left one thing unverified rather than guess: whether the Linux
+`bin/` wrappers pin `PYTHONHOME` like the macOS ones. CI printed
+
+```
+ICARUS_BIN_DIR=/home/runner/oss-cad-suite/libexec
+PYTHONHOME=(unset)
+cocotb-config -> .../systolic-array/.venv/bin/cocotb-config
+numpy 2.5.4
+```
+
+My venv won, numpy was reachable, `env.sh` needed no Linux branch for that.
+
+### The question I didn't ask is what broke it
+
+```
+libexec/vvp: error while loading shared libraries:
+libvvp.so.1: cannot open shared object file
+```
+
+I had taken a macOS fact and quietly promoted it to a cross-platform one. On
+macOS, `libexec/vvp` names its library as
+`@executable_path/../lib/libvvp.1.14.0.dylib`, resolving relative to itself —
+which is why pointing at `libexec` works there and why I assumed it would work
+anywhere. The Linux build ships its own glibc and runs `libexec` binaries
+through its own dynamic loader with `--inhibit-cache --inhibit-rpath ""`.
+
+I read the Linux wrapper rather than inferring it, streaming the tarball and
+stopping at the first match instead of pulling all 712 MB.
+
+So the wrappers do **two** jobs: the loader invocation, which I need, and the
+`PYTHONHOME` export, which hides numpy from cocotb and kills my oracle. On day 1
+I bypassed `bin/` to escape the second and didn't notice I'd dropped the first,
+because on macOS it costs nothing.
+
+My first instinct — set `LD_LIBRARY_PATH` — would have been wrong in a way that
+might not have failed immediately: it pairs the *system* loader with the suite's
+bundled libc, which is exactly what `--inhibit-rpath` exists to prevent.
+
+`tb/toolshim-linux/` is the suite's own invocation minus that one export.
+`env.sh` now chooses per platform. Linux `bin/iverilog` sets no `PYTHONHOME` at
+all, so this is a one-binary problem that looked like a directory-wide one; CI
+compiled fine through raw `libexec/iverilog` by luck, and the shim covers both
+regardless.
+
+### Corrections to earlier entries
+
+- Cold cache costs ~20s on a runner, not the 2-4 minutes I estimated. Runner
+  bandwidth to GitHub releases is much better than I assumed.
+- The gate worked on its first outing: the `results.xml` check failed the run
+  rather than letting a build error pass as success.
+
+### The pattern worth naming
+
+Five of the six real problems this project has hit were the toolchain
+misreporting itself, not the RTL being wrong. The one habit that keeps paying is
+refusing to accept a green check as evidence — printing the toolchain on every
+run is what turned "CI is broken" into a specific, fixable sentence.

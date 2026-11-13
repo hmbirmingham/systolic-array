@@ -65,10 +65,8 @@ job; as it stands the cache makes B cheap in steady state.
   the cold cost again. Acceptable.
 - The Python version is part of the toolchain, not incidental: cocotb embeds
   libpython into the simulator process. The workflow pins 3.13 to match my venv.
-- Whether the Linux build's `bin/` wrappers pin `PYTHONHOME` the way the macOS
-  ones do is **unverified**. The workflow has a step that prints the resolved
-  interpreter and `ICARUS_BIN_DIR` so the first run answers it rather than
-  hiding it. If they do, `env.sh` already handles it.
+- The first CI run resolved the question I'd left open, and not the way I
+  framed it. See the amendment below.
 - The gate doesn't rely on `make` returning non-zero. It parses `results.xml`
   and fails on any failure *or* on zero tests, because a suite that silently
   runs nothing would otherwise report success. I tested that checker against a
@@ -80,3 +78,61 @@ job; as it stands the cache makes B cheap in steady state.
 
 Verilator as a second matrix job. Two simulators disagreeing is a signal worth
 having, and it's nearly free once the install works. Not in the first workflow.
+
+
+---
+
+## Amendment, 2026-11-13: what the first run actually found
+
+I left one thing unverified on purpose: whether the Linux `bin/` wrappers pin
+`PYTHONHOME` the way the macOS ones do. The first run answered it, and the
+framing was too narrow.
+
+**The `PYTHONHOME` half came out clean.** CI printed
+`cocotb-config -> .../.venv/bin/cocotb-config`, `PYTHONHOME=(unset)`, and
+`numpy 2.5.4`. `env.sh` worked unchanged on Linux and the "one toolchain code
+path" argument held.
+
+**But the run failed anyway**, on something I hadn't thought to ask about:
+
+```
+libexec/vvp: error while loading shared libraries:
+libvvp.so.1: cannot open shared object file
+```
+
+I'd generalised a macOS fact into a cross-platform assumption. On macOS,
+`libexec/vvp` references its library as
+`@executable_path/../lib/libvvp.1.14.0.dylib` and so resolves relative to
+itself, which is why pointing `ICARUS_BIN_DIR` at `libexec` works there. The
+Linux build does something else entirely — it ships its own glibc and runs
+`libexec` binaries through its own dynamic loader:
+
+```bash
+exec .../lib/ld-linux-x86-64.so.2 --inhibit-cache --inhibit-rpath "" \
+     --library-path .../lib .../libexec/vvp "$@"
+```
+
+I read that off the Linux tarball rather than inferring it, by streaming the
+archive and stopping at the first match instead of downloading all 712 MB.
+
+So the wrappers carry **two** responsibilities, not one: the loader invocation,
+which I need, and the `PYTHONHOME` export, which breaks my oracle. Bypassing
+`bin/` to escape the second silently dropped the first. My first instinct was to
+set `LD_LIBRARY_PATH`, which would have paired the *system* loader with the
+suite's bundled libc — precisely what `--inhibit-cache --inhibit-rpath` exists
+to prevent.
+
+`tb/toolshim-linux/` is the suite's own invocation with the single `PYTHONHOME`
+export removed, and `env.sh` selects per platform. Worth noting that Linux
+`bin/iverilog` sets no `PYTHONHOME` at all — only `vvp` does — so this is a
+one-binary problem wearing a whole-directory disguise. CI's run compiled fine
+through raw `libexec/iverilog`, which was luck rather than correctness; the
+shim covers both.
+
+The observed cold-cache cost was also far below my estimate: the 712 MB
+download and extract took roughly 20 seconds on a runner, not the 2-4 minutes I
+wrote above.
+
+**What I'd keep from this:** the decision to print the toolchain on every run
+rather than assume it. The step I added to answer a question I had is what
+surfaced the one I didn't.

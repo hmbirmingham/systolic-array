@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# The suite's bin/vvp invocation, minus the PYTHONHOME export. See README.md.
+set -euo pipefail
+: "${OSS_CAD_SUITE:?OSS_CAD_SUITE is not set — source env.sh first}"
+exec "$OSS_CAD_SUITE/lib/ld-linux-x86-64.so.2" \
+     --inhibit-cache --inhibit-rpath "" \
+     --library-path "$OSS_CAD_SUITE/lib" \
+     "$OSS_CAD_SUITE/libexec/vvp" "$@"
