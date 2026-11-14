@@ -388,6 +388,7 @@ widths, and `tb/pe` at `DATA_W=8` does catch it.
 - The **working volume** is unconfirmed. Q7.8 is the conservative default. If
   the real volume is a room, Q4.11 is a 7x accuracy improvement for a one-line
   change.
-- The **Pi 5 baseline** needs a Pi 5. Cycle counts are measured; the comparison
-  is not.
+- The **MCU baseline** is unmeasured. It needs the same transform in C on a
+  Cortex-M4 (STM32F411RE) and a board to run it on. Cycles per point is the
+  comparison that means something architecturally; wall-clock waits on Fmax.
 - `nextpnr` still has not run, so Fmax is unmeasured.

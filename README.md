@@ -72,7 +72,7 @@ Both run against the same RTL:
 
 ### Results
 
-| Benchmark | Cycles/tile | Throughput | Accuracy | Pi 5 baseline |
+| Benchmark | Cycles/tile | Throughput | Accuracy | MCU baseline |
 |---|---|---|---|---|
 | 4x4 transform, `DATA_W=16` | 10 (4 points) | 2.50 cycles/point | 4.54 mm max, 1.50 mm rms | not yet measured |
 | Linear filter (im2col) | — | — | — | — |
@@ -83,6 +83,11 @@ against the fixed-point reference, with no tolerance on that comparison. The
 derived error bound for this format is 28.2 mm, so the measured figures sit
 about 6x inside it — the bound is what the format guarantees
 ([ADR-0002](docs/decisions/ADR-0002-fixed-point.md)).
+
+The baseline is the same transform in C on a Cortex-M4 (STM32F411RE), which is
+the class of processor this array would offload. Cycles per point is the
+architectural comparison; wall-clock depends on Fmax, which `nextpnr` has not
+measured yet.
 
 ### Synthesis
 
