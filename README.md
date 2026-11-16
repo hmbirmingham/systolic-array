@@ -1,12 +1,12 @@
 # systolic-array
 
 A parameterized 4x4 systolic array in SystemVerilog, verified with cocotb and
-synthesized with Yosys and nextpnr. v1 is simulation only; no hardware bring-up
-until summer 2027.
+synthesized with Yosys. Place and route with nextpnr has not run yet. v1 is
+simulation only; no hardware bring-up until summer 2027.
 
 The 4x4 shape is deliberate. Point cloud transforms are 4x4 homogeneous matrix
 multiplies, so the array maps onto a real workload rather than an arbitrary
-benchmark size. It extends my spine — physical signal to decision — down to
+benchmark size. It extends my spine, physical signal to decision, down to
 silicon.
 
 ## Layout
@@ -16,7 +16,7 @@ silicon.
 | `rtl/` | `pe.sv` (MAC cell), `systolic_4x4.sv` (the array), `systolic_4x4_top.sv` (readout wrapper) |
 | `tb/` | cocotb testbenches per block, `sim.mk`, Linux tool shims |
 | `golden/` | NumPy reference models |
-| `synth/` | Yosys + nextpnr scripts and committed reports |
+| `synth/` | `run.sh` (Yosys, both targets, both widths) and the committed cell-count reports |
 | `docs/` | `BUILD_LOG.md`, architecture decision records |
 
 ## Design
@@ -75,14 +75,18 @@ Both run against the same RTL:
 | Benchmark | Cycles/tile | Throughput | Accuracy | MCU baseline |
 |---|---|---|---|---|
 | 4x4 transform, `DATA_W=16` | 10 (4 points) | 2.50 cycles/point | 4.54 mm max, 1.50 mm rms | not yet measured |
-| Linear filter (im2col) | — | — | — | — |
+| Linear filter (im2col) | not yet measured | not yet measured | not yet measured | not yet measured |
 
 Tile cycles include fill and drain and exclude the 16-cycle readout. Accuracy is
 quantization error against a float reference; the RTL itself is **bit-exact**
 against the fixed-point reference, with no tolerance on that comparison. The
 derived error bound for this format is 28.2 mm, so the measured figures sit
-about 6x inside it — the bound is what the format guarantees
+about 6x inside it. The bound is what the format guarantees
 ([ADR-0002](docs/decisions/ADR-0002-fixed-point.md)).
+
+Every figure in the transform row is printed by `tb/transform` on each CI run:
+the bit-exact check over 64 points, the error over 256 points, and the cycle
+count over 1024 points.
 
 The baseline is the same transform in C on a Cortex-M4 (STM32F411RE), which is
 the class of processor this array would offload. Cycles per point is the
@@ -103,6 +107,10 @@ iCE40 at 16 bits is 170% of an HX8K's 7,680 LUTs. ECP5 infers one `MULT18X18D`
 per PE, and 16-bit costs the same as 8-bit because the DSP block covers both.
 The target is ECP5 ([ADR-0006](docs/decisions/ADR-0006-synthesis-target.md)).
 
+Each cell of that table is a Yosys `stat` report in
+[`synth/reports/`](synth/reports/), one file per target and width, and
+`synth/run.sh` regenerates all four.
+
 ## Setup
 
 Toolchain versions and the macOS and Linux traps are in
@@ -110,7 +118,8 @@ Toolchain versions and the macOS and Linux traps are in
 
 ```bash
 source env.sh          # venv ahead of OSS CAD Suite, platform-correct ICARUS_BIN_DIR
-cd tb/array && make    # or tb/pe, tb/top
+cd tb/array && make    # or tb/pe, tb/top, tb/transform
+bash synth/run.sh      # from the repo root: Yosys cell counts into synth/reports/
 ```
 
 ## Branch flow

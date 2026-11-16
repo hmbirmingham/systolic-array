@@ -1,0 +1,19 @@
+
+5. Printing statistics.
+
+=== systolic_4x4 ===
+
+        +----------Local Count, excluding submodules.
+        | 
+     3113 wires
+     9390 wire bits
+     3113 public wires
+     9390 public wire bits
+        7 ports
+      580 port bits
+     5158 cells
+       16   $scopeinfo
+      656   SB_CARRY
+      704   SB_DFFESR
+     3782   SB_LUT4
+
