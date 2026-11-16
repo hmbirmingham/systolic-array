@@ -392,3 +392,80 @@ widths, and `tb/pe` at `DATA_W=8` does catch it.
   Cortex-M4 (STM32F411RE) and a board to run it on. Cycles per point is the
   comparison that means something architecturally; wall-clock waits on Fmax.
 - `nextpnr` still has not run, so Fmax is unmeasured.
+
+---
+
+## 2026-11-16: consolidation, v0.1
+
+No RTL, no testbench changes, no new measurements. This entry is about getting
+what already existed onto `main`, and making every number in the README trace
+to something in the repo.
+
+### Where the branches were
+
+`dev` was 4 commits ahead of `main` and 2 behind, and `test` was 1 behind.
+
+The 4 ahead were PRs 6 and 7, the array and the transform benchmark. They had
+merged into `dev` and never been promoted. The 2 behind were the merge commits
+from PRs 4 and 5. Those exist only on `test` and `main` because I promote with
+merge commits, and they carry no content: diffing the branches showed nothing
+on `main` that `dev` lacked.
+
+So there was nothing to reconcile by hand. Being behind by merge commits is
+what this flow looks like. It is not drift.
+
+### A commit that missed its PR
+
+`28ab73b`, the Cortex-M4 baseline correction, was pushed to
+`feat/bench-transform` after PR 7 had already merged, so `dev` never received
+it. PR 8 landed it.
+
+I found it by listing what each feature branch had that `dev` did not. That is
+now the first thing I check before a promotion.
+
+### The synthesis numbers had no source in the repo
+
+The README said `synth/` held scripts and committed reports. It held a
+`.gitkeep`. The LUT and multiplier counts in the README, this log and ADR-0006
+were figures I had typed in after running Yosys by hand.
+
+PR 9 added `synth/run.sh` and the four `stat` reports it writes. Re-run on
+Yosys 0.70+277, every figure matched what I had written down.
+
+The README also said the design was synthesized with nextpnr. It has not been.
+Fixed in the same PR.
+
+### Where each README number comes from
+
+| Number | Source |
+|---|---|
+| 2.50 cycles/point | `tb/transform`, `test_throughput`: 1024 points, 256 tiles x 10 cycles |
+| 4.54 mm max, 1.50 mm rms | `tb/transform`, `test_quantization_error_is_inside_the_derived_bound`: 256 points, prints 4.541 and 1.498 |
+| Bit-exact | `tb/transform`, `test_rtl_matches_fixed_point_reference_bit_for_bit`: 64 points, exact equality, no tolerance |
+| iCE40 3,782 / 13,028 LUT4 | `synth/reports/ice40_dw8.txt`, `synth/reports/ice40_dw16.txt` |
+| ECP5 514 / 515 LUT4, 16 MULT18X18D | `synth/reports/ecp5_dw8.txt`, `synth/reports/ecp5_dw16.txt` |
+
+The cycle count is the feed schedule, 10 clock edges per tile, times the 256
+tiles the test drives through the RTL. It is not read from a counter in the
+design. `test_cycle_accurate_against_model` in `tb/array` is what checks that
+the hardware follows that schedule edge by edge.
+
+The error figures are one synthetic cloud at a +/-64 m extent. The number the
+format guarantees is the 28.2 mm bound, not the 4.54 mm measurement.
+
+21 tests across four suites, green in CI on every PR in this promotion.
+
+### Still not measured
+
+- The linear filter benchmark.
+- The Cortex-M4 baseline.
+- Fmax. `nextpnr` has not run.
+
+None of these were measured for v0.1, and the README says "not yet measured" in
+each place.
+
+### v0.1
+
+`v0.1` is the `main` commit this promotion produces: the PE, the 4x4 array, the
+readout wrapper, the transform benchmark, the synthesis reports, and CI on the
+cocotb suite. Simulation only.
