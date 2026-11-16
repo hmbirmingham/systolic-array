@@ -11,7 +11,11 @@ OSS_CAD_SUITE ?= $(HOME)/oss-cad-suite
 # Reach the real Icarus binaries. Everything in $(OSS_CAD_SUITE)/bin is a bash
 # wrapper that exports PYTHONHOME to the suite's own bundled Python 3.11, which
 # has no numpy — so cocotb would load the wrong interpreter and my golden models
-# would be unavailable. libexec/ holds the actual executables.
+# would be unavailable.
+#
+# libexec/ is correct on macOS only. On Linux those binaries need the suite's
+# bundled dynamic loader, so env.sh points this at tb/toolshim-linux instead.
+# `?=` leaves an exported value alone, so sourcing env.sh wins over this default.
 ICARUS_BIN_DIR ?= $(OSS_CAD_SUITE)/libexec
 
 # cocotb 2.x renamed MODULE. Using the old name still works but warns.
