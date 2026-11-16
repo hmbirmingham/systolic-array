@@ -1,22 +1,22 @@
 # systolic-array
 
 A parameterized 4x4 systolic array in SystemVerilog, verified with cocotb and
-synthesized with Yosys and nextpnr. v1 is simulation only; no hardware bring-up
-until summer 2027.
+synthesized with Yosys. Place and route with nextpnr has not run yet. v1 is
+simulation only; no hardware bring-up until summer 2027.
 
 The 4x4 shape is deliberate. Point cloud transforms are 4x4 homogeneous matrix
 multiplies, so the array maps onto a real workload rather than an arbitrary
-benchmark size. It extends my spine — physical signal to decision — down to
+benchmark size. It extends my spine, physical signal to decision, down to
 silicon.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
-| `rtl/` | `pe.sv` (multiply-accumulate cell), `systolic_4x4.sv` |
-| `tb/` | cocotb testbenches, `sim.mk`, Linux tool shims |
+| `rtl/` | `pe.sv` (MAC cell), `systolic_4x4.sv` (the array), `systolic_4x4_top.sv` (readout wrapper) |
+| `tb/` | cocotb testbenches per block, `sim.mk`, Linux tool shims |
 | `golden/` | NumPy reference models |
-| `synth/` | Yosys + nextpnr scripts and committed reports |
+| `synth/` | `run.sh` (Yosys, both targets, both widths) and the committed cell-count reports |
 | `docs/` | `BUILD_LOG.md`, architecture decision records |
 
 ## Design
@@ -32,6 +32,18 @@ creates the diagonal wavefront, so skew is a property of the dataflow rather
 than something the testbench arranges.
 [ADR-0001](docs/decisions/ADR-0001-dataflow.md) covers the weight-stationary
 alternative.
+
+Because the operands are skewed, each cell works on a different window of the
+tile. Rather than add per-cell start logic, the feed is zero-padded outside each
+window: an out-of-window product is zero, so every cell can run with `en` high
+for the whole tile under a single broadcast `clear`
+([ADR-0004](docs/decisions/ADR-0004-tile-control.md)). A tile is `K + 2*(N-1)`
+cycles, fill and drain included.
+
+`systolic_4x4` exposes all sixteen accumulators flat, which is right for
+verification and unplaceable on a device at 512 bits. `systolic_4x4_top` adds a
+shift-chain readout, one word per cycle
+([ADR-0005](docs/decisions/ADR-0005-readout.md)).
 
 ## Verification
 
@@ -51,26 +63,53 @@ into `dev`, `test` and `main`
 
 Both run against the same RTL:
 
-1. **4x4 homogeneous transform** over a synthetic point cloud, points batched as
-   4xN tiles, fixed-point at `DATA_W=16`.
+1. **4x4 homogeneous transform** over a synthetic point cloud, four points per
+   tile, fixed-point at `DATA_W=16`. The matrix is Q1.14 and the points Q7.8,
+   with translation carried through a power-of-two scale on the homogeneous
+   component ([ADR-0002](docs/decisions/ADR-0002-fixed-point.md)).
 2. **Linear image filter**, one convolution step from an image-processing
    pipeline, expressed as a matmul via im2col.
 
 ### Results
 
-Not yet measured.
-
-| Benchmark | Cycles | Throughput | Pi 5 baseline | Speedup |
+| Benchmark | Cycles/tile | Throughput | Accuracy | MCU baseline |
 |---|---|---|---|---|
-| 4x4 transform | — | — | — | — |
-| Linear filter (im2col) | — | — | — | — |
+| 4x4 transform, `DATA_W=16` | 10 (4 points) | 2.50 cycles/point | 4.54 mm max, 1.50 mm rms | not yet measured |
+| Linear filter (im2col) | not yet measured | not yet measured | not yet measured | not yet measured |
+
+Tile cycles include fill and drain and exclude the 16-cycle readout. Accuracy is
+quantization error against a float reference; the RTL itself is **bit-exact**
+against the fixed-point reference, with no tolerance on that comparison. The
+derived error bound for this format is 28.2 mm, so the measured figures sit
+about 6x inside it. The bound is what the format guarantees
+([ADR-0002](docs/decisions/ADR-0002-fixed-point.md)).
+
+Every figure in the transform row is printed by `tb/transform` on each CI run:
+the bit-exact check over 64 points, the error over 256 points, and the cycle
+count over 1024 points.
+
+The baseline is the same transform in C on a Cortex-M4 (STM32F411RE), which is
+the class of processor this array would offload. Cycles per point is the
+architectural comparison; wall-clock depends on Fmax, which `nextpnr` has not
+measured yet.
 
 ### Synthesis
 
-Not yet run. A smoke check on the PE alone gives 238 LUT4, 48 DFFESR and
-41 SB_CARRY on iCE40 with no `SB_MAC16` inferred, so the 8x8 multiply maps to
-LUT logic. Sixteen of those is roughly 3,800 LUTs, comfortable on an HX8K at 8
-bits and probably not at `DATA_W=16`.
+Yosys only so far; `nextpnr` has not run, so Fmax is unmeasured. Measured on
+`systolic_4x4` with `ACC_W=32`:
+
+| Target | `DATA_W=8` | `DATA_W=16` | Hard multipliers |
+|---|---|---|---|
+| iCE40 | 3,782 LUT4 | 13,028 LUT4 | none inferred |
+| ECP5 | 514 LUT4 | 515 LUT4 | 16 × MULT18X18D |
+
+iCE40 at 16 bits is 170% of an HX8K's 7,680 LUTs. ECP5 infers one `MULT18X18D`
+per PE, and 16-bit costs the same as 8-bit because the DSP block covers both.
+The target is ECP5 ([ADR-0006](docs/decisions/ADR-0006-synthesis-target.md)).
+
+Each cell of that table is a Yosys `stat` report in
+[`synth/reports/`](synth/reports/), one file per target and width, and
+`synth/run.sh` regenerates all four.
 
 ## Setup
 
@@ -79,7 +118,8 @@ Toolchain versions and the macOS and Linux traps are in
 
 ```bash
 source env.sh          # venv ahead of OSS CAD Suite, platform-correct ICARUS_BIN_DIR
-cd tb/pe && make
+cd tb/array && make    # or tb/pe, tb/top, tb/transform
+bash synth/run.sh      # from the repo root: Yosys cell counts into synth/reports/
 ```
 
 ## Branch flow

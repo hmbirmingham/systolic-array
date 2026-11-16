@@ -218,3 +218,254 @@ with the `PYTHONHOME` export removed. `env.sh` selects per platform. Linux
 CI compiled through raw `libexec/iverilog` by luck and the shim covers both.
 
 Cold cache is ~20s on a runner, not the 2-4 minutes I estimated in ADR-0003.
+
+---
+
+## 2026-11-13 — PR 6: the 4x4 array
+
+`rtl/systolic_4x4.sv`, a synthesizable wrapper, and the synthesis number that
+decides the target part.
+
+### Tile control
+
+The array's cells work on different windows: PE(i,j) has real operands only for
+t = i+j .. K-1+i+j, offsets running 0 to 6. A broadcast `clear` at t=0 would
+zero PE(3,3) six cycles before its first product arrives.
+
+Solved by zero-padding the feed instead of adding control: out-of-window
+operands are zero, the product is zero, the accumulator is unchanged, so every
+cell can run with `en` high for the whole tile. The array is sixteen cells and
+wires, no counters, no per-cell start. [ADR-0004](decisions/ADR-0004-tile-control.md).
+
+`clear` outranking `en` — chosen in PR 2 for tile boundaries — is what makes
+t=0 correct: PE(0,0) already has its real first product then, and
+`acc <= en ? prod : 0` with both asserted gives the product rather than zero.
+
+A tile is K + 2*(N-1) cycles, so K+6. Fill and drain are in that number and
+have to stay in it.
+
+### The stall test was wrong, not the RTL
+
+Wrote a stall test that held `clear` through the stall and watched an
+accumulator go from -5590 to 0. `clear` is deliberately not gated by `en`, so
+holding it zeroes the array — which makes `clear` a single-cycle pulse rather
+than a mode. That is now a documented contract in ADR-0004 and in the wrapper
+header, and the stall test checks it is survivable.
+
+### Readout
+
+Sixteen accumulators at ACC_W=32 is 512 bits, which places on nothing. But
+readout logic inside the array sits in the middle of the module whose arithmetic
+is being verified.
+
+Split: `systolic_4x4` exposes the flat vector and `systolic_4x4_top` wraps it
+with a shift-chain readout, one word per cycle, row-major.
+[ADR-0005](decisions/ADR-0005-readout.md). The top is ~101 I/O at DATA_W=8 and
+~165 at 16, inside an HX8K's ~206. `read_start` snapshots all sixteen on one
+edge, so the array can stream the next tile while the previous result shifts
+out.
+
+### Synthesis, measured before the benchmarks
+
+ADR-0001 left the 16-bit question to whichever ADR settled the target. Measured
+it now rather than in PR 7, because a target that cannot hold the array is a
+constraint on the benchmarks:
+
+| Target | DATA_W=8 | DATA_W=16 | Hard multipliers |
+|---|---|---|---|
+| iCE40 | 3,782 LUT4 | 13,028 LUT4 | none inferred |
+| ECP5 | 514 LUT4 | 515 LUT4 | 16 MULT18X18D |
+
+iCE40 at 16 bits is 170% of an HX8K's 7,680 LUTs. ECP5 infers one MULT18X18D
+per PE and 16-bit costs the same as 8-bit. Target is ECP5
+([ADR-0006](decisions/ADR-0006-synthesis-target.md)).
+
+The extrapolation in ADR-0001 held: 238 x 16 predicted 3,808 against 3,782
+measured.
+
+`nextpnr-ecp5` still has not run. Fmax is unmeasured, and sixteen DSP blocks
+feeding a 32-bit accumulator is where the critical path will be.
+
+### Verification
+
+16 tests across three suites: 6 PE, 7 array, 3 wrapper.
+
+The array has two oracles. `matmul_reference` is the maths; `ArrayModel` is a
+cycle-accurate mesh composed from the already-verified `PEModel`, so a mismatch
+against one and not the other says whether the fault is arithmetic or wiring.
+`test_cycle_accurate_against_model` compares all sixteen accumulators on every
+edge, because an end-of-tile check can pass while the wavefront is wrong in a
+way that cancels.
+
+Mutation-tested, six breaks, all caught: transposing the accumulator index,
+swapping the west and north edges, removing the horizontal skew, removing the
+vertical skew, pinning the north edge to column 0, and leaving the eastward
+operand unconnected.
+
+### CI
+
+It was running `tb/pe` only, so the two new suites would not have been checked.
+It now loops every directory under `tb/` with a Makefile and requires a
+`results.xml` from each — a suite that never ran was otherwise
+indistinguishable from one that passed. Tested against a passing set, a missing
+suite, and an injected failure.
+
+Also added `main` to the push triggers. It was absent, so a direct push to
+`main` would have had no CI at all, which contradicted ADR-0003.
+
+---
+
+## 2026-11-13 — PR 7: the transform benchmark
+
+The workload the array exists for. A 4x4 homogeneous transform over a point
+cloud, four points per tile.
+
+### Fixed point, measured rather than chosen
+
+Three quantities with different ranges share one 16-bit word: rotation entries
+(all <= 1), translation (metres), and coordinates (metres). One format for all
+three costs 39 mm of error at an 8 m extent where two formats cost 0.66 mm, a
+factor of 59, because a shared format spends its fraction on range the rotation
+matrix never uses.
+
+Matrix in Q1.14, points in Q7.8, translation carried through a power-of-two
+scale on the homogeneous component: with `P[3] = w` and `M[:,3] = t/w`, the
+product recovers `t` at the matrix's own resolution.
+[ADR-0002](decisions/ADR-0002-fixed-point.md).
+
+| Matrix / point | +/-8 m | +/-64 m |
+|---|---|---|
+| Q7.8 / Q7.8 | 39.0 mm | 310.7 mm |
+| Q1.14 / Q7.8 | 3.1 mm | 4.9 mm |
+| Q1.14 / Q4.11 | 0.66 mm | saturates |
+
+### ACC_W=32 is not enough in general
+
+Four full-scale 16-bit products sum to 2^32 — `-32768 * -32768` is 2^30 and
+there are four terms — which does not fit a signed 32-bit accumulator. Inside
+the transform's envelope the measured headroom is 29 bits of 31, so it is
+sufficient *there*. That makes the envelope a constraint rather than a
+recommendation:
+
+    K * max|m_q| * max|p_q| < 2^31
+
+I found this by writing the corner test and watching it fail against an
+unbounded Python reference. The RTL was wrapping correctly; the reference was
+not wrapping at all.
+
+### Results
+
+- Bit-exact against the integer reference over 64 points. No tolerance on that
+  comparison: the RTL must equal the fixed-point answer exactly.
+- Quantization error 4.54 mm max, 1.50 mm rms against a derived bound of
+  28.2 mm, so the bound is conservative by about 6x. The bound is what gets
+  quoted, because a measurement over one cloud is not a guarantee.
+- 10 cycles per 4-point tile, **2.50 cycles/point**, fill and drain included,
+  readout excluded.
+
+### Mutation testing found a real gap
+
+The benchmark's own data never reaches the signed corner: rotation entries
+quantize to at most 2^14 and coordinates similarly, so `-32768 * -32768` never
+occurs naturally. Truncating the product by one bit survived every realistic
+test.
+
+Driving the corner directly took working out. Four corner terms do **not**
+discriminate: a 2*DATA_W-1 product wraps 2^30 to -2^30, four of those sum to
+-2^32, and the accumulator wraps that back to 0 — the same answer the correct
+version gives. The product wrap and the accumulator wrap cancel. One
+contributing term leaves the sum at 2^30, which fits, so the truncation shows.
+Only `-32768 * -32768` reaches 2^30 at all; `32767 * 32767` is 1073676289 and
+stays inside a 31-bit product.
+
+One mutation still survives and is provably a no-op here: at `DATA_W=16`,
+`2*DATA_W` equals `ACC_W`, so `ACC_W'(prod)` leaves the bits untouched and the
+product's signedness cannot matter. Sign extension exists only at narrower
+widths, and `tb/pe` at `DATA_W=8` does catch it.
+
+### Still outstanding
+
+- The **working volume** is unconfirmed. Q7.8 is the conservative default. If
+  the real volume is a room, Q4.11 is a 7x accuracy improvement for a one-line
+  change.
+- The **MCU baseline** is unmeasured. It needs the same transform in C on a
+  Cortex-M4 (STM32F411RE) and a board to run it on. Cycles per point is the
+  comparison that means something architecturally; wall-clock waits on Fmax.
+- `nextpnr` still has not run, so Fmax is unmeasured.
+
+---
+
+## 2026-11-16: consolidation, v0.1
+
+No RTL, no testbench changes, no new measurements. This entry is about getting
+what already existed onto `main`, and making every number in the README trace
+to something in the repo.
+
+### Where the branches were
+
+`dev` was 4 commits ahead of `main` and 2 behind, and `test` was 1 behind.
+
+The 4 ahead were PRs 6 and 7, the array and the transform benchmark. They had
+merged into `dev` and never been promoted. The 2 behind were the merge commits
+from PRs 4 and 5. Those exist only on `test` and `main` because I promote with
+merge commits, and they carry no content: diffing the branches showed nothing
+on `main` that `dev` lacked.
+
+So there was nothing to reconcile by hand. Being behind by merge commits is
+what this flow looks like. It is not drift.
+
+### A commit that missed its PR
+
+`28ab73b`, the Cortex-M4 baseline correction, was pushed to
+`feat/bench-transform` after PR 7 had already merged, so `dev` never received
+it. PR 8 landed it.
+
+I found it by listing what each feature branch had that `dev` did not. That is
+now the first thing I check before a promotion.
+
+### The synthesis numbers had no source in the repo
+
+The README said `synth/` held scripts and committed reports. It held a
+`.gitkeep`. The LUT and multiplier counts in the README, this log and ADR-0006
+were figures I had typed in after running Yosys by hand.
+
+PR 9 added `synth/run.sh` and the four `stat` reports it writes. Re-run on
+Yosys 0.70+277, every figure matched what I had written down.
+
+The README also said the design was synthesized with nextpnr. It has not been.
+Fixed in the same PR.
+
+### Where each README number comes from
+
+| Number | Source |
+|---|---|
+| 2.50 cycles/point | `tb/transform`, `test_throughput`: 1024 points, 256 tiles x 10 cycles |
+| 4.54 mm max, 1.50 mm rms | `tb/transform`, `test_quantization_error_is_inside_the_derived_bound`: 256 points, prints 4.541 and 1.498 |
+| Bit-exact | `tb/transform`, `test_rtl_matches_fixed_point_reference_bit_for_bit`: 64 points, exact equality, no tolerance |
+| iCE40 3,782 / 13,028 LUT4 | `synth/reports/ice40_dw8.txt`, `synth/reports/ice40_dw16.txt` |
+| ECP5 514 / 515 LUT4, 16 MULT18X18D | `synth/reports/ecp5_dw8.txt`, `synth/reports/ecp5_dw16.txt` |
+
+The cycle count is the feed schedule, 10 clock edges per tile, times the 256
+tiles the test drives through the RTL. It is not read from a counter in the
+design. `test_cycle_accurate_against_model` in `tb/array` is what checks that
+the hardware follows that schedule edge by edge.
+
+The error figures are one synthetic cloud at a +/-64 m extent. The number the
+format guarantees is the 28.2 mm bound, not the 4.54 mm measurement.
+
+21 tests across four suites, green in CI on every PR in this promotion.
+
+### Still not measured
+
+- The linear filter benchmark.
+- The Cortex-M4 baseline.
+- Fmax. `nextpnr` has not run.
+
+None of these were measured for v0.1, and the README says "not yet measured" in
+each place.
+
+### v0.1
+
+`v0.1` is the `main` commit this promotion produces: the PE, the 4x4 array, the
+readout wrapper, the transform benchmark, the synthesis reports, and CI on the
+cocotb suite. Simulation only.
