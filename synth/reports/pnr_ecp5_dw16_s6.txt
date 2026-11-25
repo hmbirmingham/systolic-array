@@ -1,0 +1,29 @@
+nextpnr-ecp5 place-and-route report
+===================================
+top        systolic_4x4_top
+DATA_W     16   ACC_W 32
+device     LFE5U-25F  package CABGA381  speed grade 6
+
+Fmax       83.68 MHz   (constraint 12 MHz, nextpnr default)
+
+Utilisation
+-----------
+  DCCA                 1 / 56       1.8%
+  MULT18X18D          16 / 28      57.1%
+  TRELLIS_COMB      1622 / 24288    6.7%
+  TRELLIS_FF        1413 / 24288    5.8%
+  TRELLIS_IO         167 / 197     84.8%
+
+Critical path
+-------------
+  total 11.951 ns over 63 segments
+  logic        5.976 ns   50.0%
+  routing      5.450 ns   45.6%
+  clk-to-q     0.525 ns    4.4%
+  setup        0.000 ns    0.0%
+
+  largest segments:
+    logic      3.927 ns  u_array.g_row[2].g_col[0].u_pe.prod_MULT18X18D_P9
+    routing    2.510 ns  u_array.g_row[2].g_col[0].u_pe.acc_TRELLIS_FF_Q_28_DI_LUT4
+    routing    2.128 ns  u_array.g_row[2].g_col[0].u_pe.prod_MULT18X18D_P9
+    routing    0.682 ns  u_array.g_row[2].g_col[0].u_pe.acc_TRELLIS_FF_Q_DI_LUT4_Z

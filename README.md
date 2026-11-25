@@ -1,8 +1,9 @@
 # systolic-array
 
-A parameterized 4x4 systolic array in SystemVerilog, verified with cocotb and
-synthesized with Yosys. Place and route with nextpnr has not run yet. v1 is
-simulation only; no hardware bring-up until summer 2027.
+A parameterized 4x4 systolic array in SystemVerilog, verified with cocotb,
+synthesized with Yosys and placed and routed with nextpnr for an ECP5. v1 is
+simulation only; nothing has run on an FPGA, and no hardware bring-up until
+summer 2027.
 
 The 4x4 shape is deliberate. Point cloud transforms are 4x4 homogeneous matrix
 multiplies, so the array maps onto a real workload rather than an arbitrary
@@ -90,8 +91,8 @@ count over 1024 points.
 
 The baseline is the same transform in C on a Cortex-M4 (STM32F411RE), which is
 the class of processor this array would offload. Cycles per point is the
-architectural comparison; wall-clock depends on Fmax, which `nextpnr` has not
-measured yet.
+architectural comparison; the wall-clock conversion is under
+[Wall-clock](#wall-clock) below, now that there is an Fmax.
 
 | | Cycles/point | Cycles/MAC | vs array |
 |---|---|---|---|
@@ -119,8 +120,7 @@ trusted for being short; now something checks it.
 
 ### Synthesis
 
-Yosys only so far; `nextpnr` has not run, so Fmax is unmeasured. Measured on
-`systolic_4x4` with `ACC_W=32`:
+Measured on `systolic_4x4` with `ACC_W=32`:
 
 | Target | `DATA_W=8` | `DATA_W=16` | Hard multipliers |
 |---|---|---|---|
@@ -134,6 +134,62 @@ The target is ECP5 ([ADR-0006](docs/decisions/ADR-0006-synthesis-target.md)).
 Each cell of that table is a Yosys `stat` report in
 [`synth/reports/`](synth/reports/), one file per target and width, and
 `synth/run.sh` regenerates all four.
+
+### Place and route
+
+`systolic_4x4_top` on an LFE5U-25F, CABGA381. The bare array cannot be routed —
+644 port bits — so Fmax belongs to the wrapper with its shift-chain readout
+(ADR-0005).
+
+| Speed grade | `DATA_W=8` | `DATA_W=16` |
+|---|---|---|
+| 6 | 87.56 MHz | **83.68 MHz** |
+| 7 | 96.00 MHz | 89.29 MHz |
+| 8 | 112.99 MHz | 107.26 MHz |
+
+Widening to 16 bits costs 4.4% of Fmax, because the DSP block absorbs it. At
+`DATA_W=16`, speed grade 6:
+
+| Resource | Used | Available | |
+|---|---|---|---|
+| MULT18X18D | 16 | 28 | 57.1% |
+| TRELLIS_COMB | 1,622 | 24,288 | 6.7% |
+| TRELLIS_FF | 1,413 | 24,288 | 5.8% |
+| TRELLIS_IO | **167** | 197 | **84.8%** |
+
+**The design is pin-bound, not logic-bound.** It uses 6.7% of the logic and 85%
+of the I/O. Anything that widens the interface hits the package before it hits
+the fabric.
+
+The 11.951 ns critical path runs from a PE's accumulator through its
+`MULT18X18D` and back: 50.0% logic, 45.6% routing, with the multiplier alone
+3.927 ns and the carry chain only 0.923 ns over 13 steps. The product is
+combinational into the accumulator, so registering it would pipeline the one
+term that dominates — at the cost of a cycle of latency per PE
+([ADR-0006](docs/decisions/ADR-0006-synthesis-target.md)).
+
+`synth/pnr.sh` regenerates all six reports.
+
+### Wall-clock
+
+With an Fmax the cycle comparison can be converted. Array at `DATA_W=16`, speed
+grade 6, against the Cortex-M4 at the F411RE's maximum 100 MHz:
+
+| | Throughput | vs MCU |
+|---|---|---|
+| Cortex-M4, 90 cycles/point @ 100 MHz | 1.11 Mpoint/s | |
+| Array, readout-bound, 4.0 cycles/point @ 83.68 MHz | 20.9 Mpoint/s | **18.8x** |
+| Array, compute only, 2.50 cycles/point @ 83.68 MHz | 33.5 Mpoint/s | 30.1x |
+
+Worth being clear about where that comes from: **the array is clocked slower
+than the MCU**, 83.68 MHz against 100 MHz. The advantage is entirely work per
+cycle, not clock speed.
+
+Two caveats. The MCU figure scales a cycle count measured at 16 MHz with zero
+flash wait states up to 100 MHz, where the F411 needs three and would depend on
+the ART accelerator to sustain it — so 1.11 Mpoint/s is generous to the MCU.
+And nothing here has run on an FPGA; these are nextpnr's post-route timing
+estimates, not measurements on a board.
 
 ## Setup
 
