@@ -534,3 +534,72 @@ dependency on that repo.
 load address up in SRAM and `objcopy` pads the flat binary from `0x08000000` to
 `0x2001F018` — a 402 MB `.bin`. Nothing initialises the section now, so `main`
 clears the guard word before measuring.
+
+---
+
+## 2026-11-25 — nextpnr, and an Fmax
+
+The last unmeasured number in the README. `systolic_4x4_top` placed and routed
+on an LFE5U-25F, CABGA381.
+
+| Speed grade | DATA_W=8 | DATA_W=16 |
+|---|---|---|
+| 6 | 87.56 MHz | 83.68 MHz |
+| 7 | 96.00 MHz | 89.29 MHz |
+| 8 | 112.99 MHz | 107.26 MHz |
+
+`synth/pnr.sh` regenerates all six reports. It routes the wrapper, not the bare
+array: 644 port bits places on nothing, so Fmax has only ever been a property of
+the design with its readout.
+
+### 16 bits costs 4.4%
+
+Against 170% of an HX8K's LUTs on iCE40. The DSP block absorbs the width, which
+is what ADR-0006 predicted when it picked ECP5 on cell counts alone.
+
+### Pin-bound, not logic-bound
+
+At DATA_W=16: 6.7% of the logic, 5.8% of the registers, 57% of the
+multipliers — and **84.8% of the I/O**, 167 of 197. The fabric is nearly empty
+and the package is nearly full.
+
+That inverts what I expected to worry about. Fitting a larger array on this part
+is not the constraint; getting data in and out of it is. ADR-0005's shift-chain
+readout is the only reason this fits a package at all, and it was chosen for
+verification reasons rather than this one.
+
+### The critical path, and what I got wrong
+
+11.951 ns, from a PE's accumulator through its `MULT18X18D` and back.
+
+    logic      5.976 ns   50.0%
+    routing    5.450 ns   45.6%
+    clk-to-q   0.525 ns    4.4%
+
+I had written that the carry chain into a 32-bit accumulator would be where the
+path went. The multiplier is indeed the largest single term at 3.927 ns, but the
+carry chain is only 0.923 ns over 13 steps, and routing is 45.6% — nearly all of
+logic. Routing that heavy is a placement artifact rather than a property of the
+design, so a floorplan or another seed may move it.
+
+If Fmax ever needs to be higher: the product is combinational into the
+accumulator, so registering it pipelines the term that dominates. That costs a
+cycle of latency per PE and changes the skew the dataflow relies on, so it is
+not free, and at 83.68 MHz it is not needed.
+
+### Wall-clock, finally
+
+Array at DATA_W=16, speed grade 6, against the M4 at the F411RE's maximum:
+
+    Cortex-M4, 90 cycles/point @ 100 MHz     1.11 Mpoint/s
+    array, readout-bound, 4.0 @ 83.68 MHz   20.9 Mpoint/s   18.8x
+    array, compute only,  2.50 @ 83.68 MHz  33.5 Mpoint/s   30.1x
+
+The array is clocked **slower** than the MCU, 83.68 against 100 MHz. The whole
+advantage is work per cycle.
+
+Two things that make 18.8x the honest figure rather than a floor. The MCU number
+scales a cycle count measured at 16 MHz and zero flash wait states up to
+100 MHz, where the F411 needs three and would lean on the ART accelerator to
+hold 90 cycles/point — generous to the MCU. And nothing here has run on an
+FPGA; these are post-route estimates.

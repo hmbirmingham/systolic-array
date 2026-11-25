@@ -29,3 +29,7 @@ bench/mcu/host_check
 bench/mcu/*.elf
 bench/mcu/*.bin
 bench/mcu/*.map
+
+# nextpnr JSON reports are intermediate; the .txt beside them is the record
+# and synth/pnr.sh regenerates both.
+synth/reports/*.json
