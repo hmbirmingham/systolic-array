@@ -469,3 +469,68 @@ each place.
 `v0.1` is the `main` commit this promotion produces: the PE, the 4x4 array, the
 readout wrapper, the transform benchmark, the synthesis reports, and CI on the
 cocotb suite. Simulation only.
+
+---
+
+## 2026-11-25 — the Cortex-M4 baseline
+
+The comparison the README had been promising. Same fixed-point transform in C on
+an STM32F411RE, measured with `DWT->CYCCNT`.
+
+| | Cycles/point | Cycles/MAC |
+|---|---|---|
+| Naive C, rolled `k` | 202.0 | 12.63 |
+| Optimised C, unrolled | 90.0 | 5.63 |
+| Array, compute only | 2.50 | |
+| Array, readout-bound steady state | 4.0 | |
+
+36x against optimised C, 22x once readout is counted. Readout is 16 cycles
+against a 10-cycle tile, so a pipelined array is readout-bound rather than
+compute-bound — which makes 2.50 the wrong number to quote for end-to-end
+throughput even though it is the right one for the arithmetic.
+
+### Two measurements I threw away
+
+The first run reported 220.8 cycles/point. The timed region was also building
+the input tiles, with a multiply and a modulo per element, and a modulo on this
+core is a division. 13.8 cycles per multiply-accumulate on a core whose `SMLABB`
+is one cycle was the tell. Inputs are now built before timing, and a pass over
+the same tiles with no transform is timed separately and subtracted.
+
+That got it to 202.0, which is still 12.63 cycles per MAC. Disassembling showed
+why, and it was not a bad compile: gcc does emit `SMLABB`, but the rolled `k`
+loop makes each MAC pay two loads, a compare and a taken branch, and the M4 has
+no branch predictor. Unrolling `k` and hoisting the point's components into
+locals gives 90.0.
+
+Both figures are in the report. Quoting only the naive one would have inflated
+the array's advantage by 2.24x.
+
+### The C is also a second implementation
+
+Both variants agree with `golden/transform_ref.py` bit for bit over 32 tiles:
+realistic data, the full-scale signed corners, the single-term 2^30 corner, and
+random full-range tiles. `bench/mcu/crosscheck.py` runs it.
+
+The Python model was trusted because it is short. Nothing checked it until now.
+
+### Provenance
+
+Not a CI figure — there is no board on the runner, so this is the one number in
+the README that a workflow cannot regenerate.
+[`bench/mcu/reports/f411re_hsi16.txt`](../bench/mcu/reports/f411re_hsi16.txt)
+holds the raw results block, the part, the probe, the clock, the compiler
+version and the flags. `cd bench/mcu && make flash read` reproduces it.
+
+### Independence
+
+`bench/mcu/` carries its own startup, linker script and Makefile. Nothing comes
+from my STM32 project; using an STM32 as a measurement platform is not a
+dependency on that repo.
+
+### One thing that cost a flash attempt
+
+`.results` needs `(NOLOAD)` in the linker script. Without it the section gets a
+load address up in SRAM and `objcopy` pads the flat binary from `0x08000000` to
+`0x2001F018` — a 402 MB `.bin`. Nothing initialises the section now, so `main`
+clears the guard word before measuring.

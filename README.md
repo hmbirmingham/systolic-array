@@ -74,7 +74,7 @@ Both run against the same RTL:
 
 | Benchmark | Cycles/tile | Throughput | Accuracy | MCU baseline |
 |---|---|---|---|---|
-| 4x4 transform, `DATA_W=16` | 10 (4 points) | 2.50 cycles/point | 4.54 mm max, 1.50 mm rms | not yet measured |
+| 4x4 transform, `DATA_W=16` | 10 (4 points) | 2.50 cycles/point | 4.54 mm max, 1.50 mm rms | 90.0 cycles/point |
 | Linear filter (im2col) | not yet measured | not yet measured | not yet measured | not yet measured |
 
 Tile cycles include fill and drain and exclude the 16-cycle readout. Accuracy is
@@ -92,6 +92,30 @@ The baseline is the same transform in C on a Cortex-M4 (STM32F411RE), which is
 the class of processor this array would offload. Cycles per point is the
 architectural comparison; wall-clock depends on Fmax, which `nextpnr` has not
 measured yet.
+
+| | Cycles/point | Cycles/MAC | vs array |
+|---|---|---|---|
+| Naive C, rolled `k` loop | 202.0 | 12.63 | 81x |
+| Optimised C, unrolled | 90.0 | 5.63 | **36x** |
+| Array, compute only | 2.50 | | |
+| Array, steady state with readout | 4.0 | | 22x |
+
+36x against optimised C is the figure I stand behind; against the naive C it
+would be 81x, which flatters the array. Readout is 16 cycles against a 10-cycle
+tile, so a pipelined array is readout-bound at 4.0 cycles/point rather than
+2.50 — `read_start` snapshots the accumulators so the next tile overlaps
+(ADR-0005). On that basis it is 22x.
+
+Unlike the rows above, this one is **not** a CI figure: there is no board on the
+runner. It is a board run recorded in
+[`bench/mcu/reports/f411re_hsi16.txt`](bench/mcu/reports/f411re_hsi16.txt) with
+the raw results block, the toolchain, and the flags, reproducible with
+`cd bench/mcu && make flash read`.
+
+The C is also a second implementation of the fixed-point format, held to
+`golden/transform_ref.py` bit-for-bit over realistic tiles and the signed
+corners (`.venv/bin/python bench/mcu/crosscheck.py`). The Python model was
+trusted for being short; now something checks it.
 
 ### Synthesis
 
