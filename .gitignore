@@ -25,3 +25,7 @@ synth/build/
 
 # macOS
 .DS_Store
+bench/mcu/host_check
+bench/mcu/*.elf
+bench/mcu/*.bin
+bench/mcu/*.map
